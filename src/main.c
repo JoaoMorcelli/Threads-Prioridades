@@ -2,6 +2,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/sys/printk.h>
 #include <zephyr/device.h>
+#include <zephyr/logging/log.h>
 
 // LEDs e Botão
 #define LED_C_NODE DT_ALIAS(led1)
@@ -20,14 +21,14 @@ static struct gpio_callback button_cb_data;
 #define TEMPO_A_MS   500   // Thread A dorme
 #define TEMPO_B_MS  1200   // Thread B dorme
 
-
+LOG_MODULE_REGISTER(meu_modulo, LOG_LEVEL_INF);
 // ISR - Toggle LED
 void button_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
 {
     gpio_pin_set_dt(&ledc, 1);
     gpio_pin_set_dt(&ledA, 0);
     gpio_pin_set_dt(&ledB, 0);
-    for (volatile int i = 0; i < 10000000; i++) {
+    for (volatile int i = 0; i < 1000000; i++) {
         }
     gpio_pin_set_dt(&ledc, 0);
 }
@@ -45,11 +46,11 @@ void thread_A(void *p1, void *p2, void *p3)
 
         gpio_pin_set_dt(&ledA, 0);  // Desliga LED verde
         end_ms = k_uptime_get();  // tempo após o delay
-        printk("Thread A (LED Verde) - Incompleto: %llu ms\n", end_ms - start_ms);
+        LOG_INF("Thread A (LED Verde) - Incompleto: %llu ms\n", end_ms - start_ms);
 
         k_msleep(TEMPO_A_MS);       // Dorme — libera CPU
         end = k_uptime_get();
-        printk("Thread A (LED Verde) - Completo: %llu ms\n", end - start);
+        LOG_INF("Thread A (LED Verde) - Completo: %llu ms\n", end - start);
     }
 }
 
@@ -70,11 +71,11 @@ void thread_B(void *p1, void *p2, void *p3)
 
         gpio_pin_set_dt(&ledB, 0);  // Desliga LED vermelho
         end_msa = k_uptime_get();  // tempo após o delay
-        printk("Thread B - Incompleto: %llu ms\n", end_msa - start_msa);
+        LOG_INF("Thread B - Incompleto: %llu ms\n", end_msa - start_msa);
 
         k_msleep(TEMPO_B_MS);       // Dorme um pouco
         enda = k_uptime_get();  // tempo após o delay
-        printk("Thread B - Completo: %llu ms\n", enda - starta);
+        LOG_INF("Thread B - Completo: %llu ms\n", enda - starta);
 
     }
 }
