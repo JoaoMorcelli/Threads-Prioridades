@@ -1,2 +1,2 @@
-# Threads-Prioridades
-Repositório da Aula 03 de Microcontroladores 2.
+# Race Condition
+Exemplo de Race Condition criado por IA (Gemini Raciocínio)
