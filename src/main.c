@@ -1,110 +1,91 @@
-#include <zephyr/kernel.h>
-#include <zephyr/drivers/gpio.h>
-#include <zephyr/sys/printk.h>
-#include <zephyr/device.h>
-#include <zephyr/logging/log.h>
+#include <kernel.h>
+#include <sys/printk.h>
+#include <logging/log.h>
 
-// LEDs e Botão
-#define LED_C_NODE DT_ALIAS(led1)
-#define BUTTON_NODE DT_NODELABEL(user_button_0)
-#define LED_A_NODE DT_ALIAS(led0)  // LED verde
-#define LED_B_NODE DT_ALIAS(led2)  // LED vermelho
+LOG_MODULE_REGISTER(race_condition_banco, LOG_LEVEL_INF);
 
-static const struct gpio_dt_spec ledA = GPIO_DT_SPEC_GET(LED_A_NODE, gpios);
-static const struct gpio_dt_spec ledB = GPIO_DT_SPEC_GET(LED_B_NODE, gpios);
-static const struct gpio_dt_spec ledc = GPIO_DT_SPEC_GET(LED_C_NODE, gpios);
-static const struct gpio_dt_spec button = GPIO_DT_SPEC_GET(BUTTON_NODE, gpios);
-static struct gpio_callback button_cb_data;
+#define STACK_SIZE 1024
+#define THREAD_PRIORITY 7
+#define NUM_OPERACOES 10
+#define VALOR_TRANSACAO 50
 
-#define PRIO_THREAD_A 4   // Maior prioridade (número menor)
-#define PRIO_THREAD_B 0   // Menor prioridade
-#define TEMPO_A_MS   500   // Thread A dorme
-#define TEMPO_B_MS  1200   // Thread B dorme
+/* RECURSO COMPARTILHADO: Saldo bancário global */
+static volatile int saldo_conta = 1000;
 
-LOG_MODULE_REGISTER(meu_modulo, LOG_LEVEL_INF);
-// ISR - Toggle LED
-void button_isr(const struct device *dev, struct gpio_callback *cb, uint32_t pins)
+/* Thread 1: Realiza depósitos sucessivos na conta */
+void thread_depositar(void *p1, void *p2, void *p3)
 {
-    gpio_pin_set_dt(&ledc, 1);
-    gpio_pin_set_dt(&ledA, 0);
-    gpio_pin_set_dt(&ledB, 0);
-    for (volatile int i = 0; i < 1000000; i++) {
-        }
-    gpio_pin_set_dt(&ledc, 0);
-}
+    for (int i = 0; i < NUM_OPERACOES; i++) {
+        /* 1. LEITURA: Lê o saldo global desatualizado no momento */
+        int saldo_local = saldo_conta;
+        LOG_INF("[Depósito] Leu saldo atual: R$ %d", saldo_local);
 
-void thread_A(void *p1, void *p2, void *p3)
-{
-    uint64_t start_ms, end_ms, start, end;
-    while (1) {
-        start_ms = k_uptime_get();  // tempo atual em ms
-        start = k_uptime_get();
-        gpio_pin_set_dt(&ledA, 1);  // Liga LED verde
+        /* 2. JANELA DE VULNERABILIDADE:
+         * O k_msleep entrega a CPU para a outra thread antes de atualizar a memória */
+        k_msleep(2);
 
-        // Simula processamento rápido 
-        for (volatile int i = 0; i < 200000; i++) {}
+        /* 3. MODIFICAÇÃO E ESCRITA: Processa o cálculo e sobrescreve o saldo */
+        saldo_local += VALOR_TRANSACAO;
+        saldo_conta = saldo_local;
+        LOG_INF("--> [Depósito] Atualizou saldo para: R$ %d", saldo_conta);
 
-        gpio_pin_set_dt(&ledA, 0);  // Desliga LED verde
-        end_ms = k_uptime_get();  // tempo após o delay
-        LOG_INF("Thread A (LED Verde) - Incompleto: %llu ms\n", end_ms - start_ms);
-
-        k_msleep(TEMPO_A_MS);       // Dorme — libera CPU
-        end = k_uptime_get();
-        LOG_INF("Thread A (LED Verde) - Completo: %llu ms\n", end - start);
+        k_msleep(5);
     }
 }
 
-void thread_B(void *p1, void *p2, void *p3)
+/* Thread 2: Realiza saques sucessivos na conta */
+void thread_sacar(void *p1, void *p2, void *p3)
 {
-    uint64_t start_msa, end_msa, starta, enda;
-    while (1) {
-        start_msa = k_uptime_get();  // tempo atual em ms
-        starta = k_uptime_get();
-        gpio_pin_set_dt(&ledB, 1);  // Liga LED vermelho
+    for (int i = 0; i < NUM_OPERACOES; i++) {
+        /* 1. LEITURA */
+        int saldo_local = saldo_conta;
+        LOG_INF("[Saque   ] Leu saldo atual: R$ %d", saldo_local);
 
-        // Simula processamento mais longo 
-        for (volatile int i = 0; i < 10000000; i++) {
-            if (i % 100000 == 0) {
-                // Aqui não imprimimos nada — apenas ocupamos a CPU
-            }
-        }
+        /* 2. JANELA DE VULNERABILIDADE */
+        k_msleep(2);
 
-        gpio_pin_set_dt(&ledB, 0);  // Desliga LED vermelho
-        end_msa = k_uptime_get();  // tempo após o delay
-        LOG_INF("Thread B - Incompleto: %llu ms\n", end_msa - start_msa);
+        /* 3. MODIFICAÇÃO E ESCRITA */
+        saldo_local -= VALOR_TRANSACAO;
+        saldo_conta = saldo_local;
+        LOG_INF("--> [Saque   ] Atualizou saldo para: R$ %d", saldo_conta);
 
-        k_msleep(TEMPO_B_MS);       // Dorme um pouco
-        enda = k_uptime_get();  // tempo após o delay
-        LOG_INF("Thread B - Completo: %llu ms\n", enda - starta);
-
+        k_msleep(5);
     }
 }
 
-K_THREAD_DEFINE(a_tid, 512, thread_A, NULL, NULL, NULL,
-                PRIO_THREAD_A, 0, 0);
-K_THREAD_DEFINE(b_tid, 512, thread_B, NULL, NULL, NULL,
-                PRIO_THREAD_B, 0, 0);
+/* Instanciação das duas threads no Zephyr */
+K_THREAD_DEFINE(thread_dep, STACK_SIZE, thread_depositar, NULL, NULL, NULL, THREAD_PRIORITY, 0, 0);
+K_THREAD_DEFINE(thread_saq, STACK_SIZE, thread_sacar,     NULL, NULL, NULL, THREAD_PRIORITY, 0, 0);
 
 int main(void)
 {
-    // Configurar LED e botão com pull-up
-    gpio_pin_configure_dt(&ledc, GPIO_OUTPUT_INACTIVE);
-    gpio_pin_configure_dt(&button, GPIO_INPUT | GPIO_PULL_UP);
-    gpio_pin_configure_dt(&ledA, GPIO_OUTPUT_INACTIVE);
-    gpio_pin_configure_dt(&ledB, GPIO_OUTPUT_INACTIVE);
+    int saldo_inicial = saldo_conta;
+    int saldo_esperado = saldo_inicial; // + (10 * 50) - (10 * 50) = 1000
 
-     if (!device_is_ready(ledA.port) || !device_is_ready(ledB.port)) {
-        return 0;
+    LOG_INF("==================================================");
+    LOG_INF(" DEMONSTRACAO DE RACE CONDITION: SISTEMA BANCARIO ");
+    LOG_INF("==================================================");
+    LOG_INF("Saldo Inicial: R$ %d", saldo_inicial);
+    LOG_INF("Executando %d depósitos e %d saques de R$ %d...", NUM_OPERACOES, NUM_OPERACOES, VALOR_TRANSACAO);
+    LOG_INF("Saldo Final Esperado: R$ %d", saldo_esperado);
+    LOG_INF("--------------------------------------------------");
+
+    /* Aguarda a conclusão dos ciclos de ambas as threads */
+    k_msleep(3000);
+
+    /* Verificação de corrupção dos dados */
+    LOG_INF("==================================================");
+    LOG_INF("RESULTADO FINAL DA CONTA:");
+    LOG_INF("Saldo Esperado : R$ %d", saldo_esperado);
+    LOG_INF("Saldo REAL     : R$ %d", saldo_conta);
+
+    if (saldo_conta != saldo_esperado) {
+        LOG_INF("STATUS         : RACE CONDITION DETECTADA!");
+        LOG_INF("Diferença de R$ %d devido a operações concorrentes desprotegidas.", saldo_conta - saldo_esperado);
+    } else {
+        LOG_INF("STATUS         : Nenhuma inconsistência detectada (Execução atípica).");
     }
-    
-    // Configurar interrupção na borda de descida
-    gpio_pin_interrupt_configure_dt(&button, GPIO_INT_EDGE_FALLING);
-    gpio_init_callback(&button_cb_data, button_isr, BIT(button.pin));
-    gpio_add_callback(button.port, &button_cb_data);
-    
-    // Main dorme
-    while (1) {
-        k_sleep(K_FOREVER);
-    }
+    LOG_INF("==================================================");
+
     return 0;
 }
